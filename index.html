@@ -247,13 +247,21 @@ font-weight:bold;color:#047857;border:1px solid #bbf7d0}
 </div>
 
 <div class="card">
-  <h2>GitHub Sync</h2>
-  <div class="note">ડેટા GitHub પર JSON તરીકે સેવ થાય.</div>
-  <label>GitHub Token</label>
+  <h2>☁️ GitHub Cloud Sync</h2>
+  <div class="note">ડેટા private GitHub repo માં JSON તરીકે સેવ થાય અને ત્યાંથી Restore થાય. ફેરફાર પછી ~15 સેકન્ડમાં આપોઆપ sync થશે (Token સેવ હોય ત્યારે).</div>
+  <label>GitHub Username</label>
+  <input type="text" id="ghOwner" placeholder="bhavikpeepee02-8966">
+  <label>Repo નામ</label>
+  <input type="text" id="ghRepo" placeholder="Bvkdatabkp">
+  <label>Personal Access Token</label>
   <input type="password" id="ghToken" placeholder="ghp_xxxxxxxxxxxx">
-  <label>Repo (owner/repo)</label>
-  <input type="text" id="ghRepo" placeholder="yourname/nse-data">
-  <button class="btn info" id="ghBtn">Sync કરો</button>
+  <label>ફાઈલ નામ</label>
+  <input type="text" id="ghPath" placeholder="nse-bhavcopy-scanner.json">
+  <div class="btn-row">
+    <button class="btn info" id="ghBtn">⬆️ Cloud Save</button>
+    <button class="btn warn" id="ghRestoreBtn">⬇️ Restore</button>
+  </div>
+  <div class="note" id="ghStatus"></div>
 </div>
 
 <div class="card">
@@ -1964,59 +1972,190 @@ function utf8ToBase64(str){
   return btoa(bin);
 }
 
-async function handleGithubSync(){
-  var token=$('ghToken').value.trim();
-  var repo=$('ghRepo').value.trim();
-  if(!token||!repo){alert('Token અને Repo ભરો');return;}
-  if(!/^[^\/]+\/[^\/]+$/.test(repo)){alert('Repo: owner/repo');return;}
-  if(!confirm('GitHub પર સેવ કરવો?'))return;
+var GH_DEFAULTS={owner:'bhavikpeepee02-8966',repo:'Bvkdatabkp',token:'',path:'nse-bhavcopy-scanner.json'};
+var GH_KEY='ghSyncSettings_nse_bhavcopy';
+var BACKUP_VERSION=1;
+var syncBusy=false;
+
+function loadGhSettings(){
+  try{return JSON.parse(localStorage.getItem(GH_KEY))||{};}catch(e){return {};}
+}
+function saveGhSettings(c){
+  try{localStorage.setItem(GH_KEY,JSON.stringify(c));}catch(e){}
+}
+function ghCfg(){
+  return {
+    owner:$('ghOwner').value.trim(),
+    repo:$('ghRepo').value.trim(),
+    token:$('ghToken').value.trim(),
+    path:($('ghPath').value.trim()||GH_DEFAULTS.path)
+  };
+}
+function ghStatus(msg,ok){
+  var e=$('ghStatus'); if(!e)return;
+  e.textContent=msg;
+  e.style.color=ok===true?'#059669':(ok===false?'#dc2626':'#64748b');
+}
+function ghUrl(c){
+  return 'https://api.github.com/repos/'+c.owner+'/'+c.repo+'/contents/'+encodeURIComponent(c.path);
+}
+function utf8ToBase64(str){
+  var bytes=new TextEncoder().encode(str);
+  var bin='';
+  var chunk=0x8000;
+  for(var i=0;i<bytes.length;i+=chunk){
+    bin+=String.fromCharCode.apply(null, bytes.subarray(i, i+chunk));
+  }
+  return btoa(bin);
+}
+function clearStore(name){
+  return new Promise(function(res,rej){
+    var tx=db.transaction([name],'readwrite');
+    var req=tx.objectStore(name).clear();
+    req.onsuccess=function(){res();};
+    req.onerror=function(e){rej(e.target.error);};
+  });
+}
+
+async function collectAllData(){
+  var keys=await getAllKeys(); keys.sort();
+  var days=[];
+  for(var i=0;i<keys.length;i++){
+    var d=await getDay(keys[i]);
+    if(d) days.push(d);
+  }
+  var skips=await getAllSkips();
+  var idx=null;
+  try{idx=await getIndexList();}catch(e){}
+  return {_v:BACKUP_VERSION,_exportedAt:new Date().toISOString(),
+    days:days,skips:skips,indexlist:idx||null};
+}
+
+function handleGithubSync(){ return pushToCloud(false); }
+
+async function pushToCloud(silent){
+  var c=silent?loadGhSettings():ghCfg();
+  if(!c.owner||!c.repo||!c.token||!c.path){
+    if(!silent) ghStatus('❌ Username, Repo, Token ભરો',false);
+    return;
+  }
+  if(syncBusy){
+    if(!silent) ghStatus('⏳ પહેલેથી ચાલુ છે...');
+    else scheduleAutoSync();
+    return;
+  }
+  if(!silent && !confirm('GitHub પર સેવ કરવો?'))return;
+  if(!silent) saveGhSettings(c);
+  syncBusy=true;
   var btn=$('ghBtn');
-  btn.disabled=true; btn.textContent='Sync...';
+  btn.disabled=true; $('ghRestoreBtn').disabled=true;
+  ghStatus(silent?'⏳ Auto-sync...':'⏳ Save થાય છે...');
   try{
-    var keys=await getAllKeys(); keys.sort();
-    var all=[];
-    for(var i=0;i<keys.length;i++){
-      var d=await getDay(keys[i]);
-      if(d) all.push(d);
+    var all=await collectAllData();
+    if(silent && all.days.length===0){
+      ghStatus('ℹ️ ડેટા ખાલી છે — Auto-sync ન થયો (backup સુરક્ષિત)');
+      return;
     }
     var json=JSON.stringify(all);
     log('JSON: '+(json.length/1048576).toFixed(2)+' MB');
-
-    if(json.length > 70*1048576){
-      alert('ડેટા 70MB થી મોટો છે.');
-      btn.disabled=false; btn.textContent='Sync કરો';
+    if(json.length>70*1048576){
+      ghStatus('❌ ડેટા 70MB થી મોટો છે',false);
       return;
     }
-
-    var path='nse_data/all_days.json';
-    var api='https://api.github.com/repos/'+repo+'/contents/'+path;
-    var sha=null;
-    try{
-      var g=await fetch(api,{headers:{'Authorization':'token '+token,
-        'Accept':'application/vnd.github.v3+json',
-        'X-GitHub-Api-Version':'2022-11-28'}});
-      if(g.ok){var gj=await g.json();sha=gj.sha;}
-    }catch(e){}
-
-    var body={message:'NSE sync '+new Date().toISOString(),
-      content:utf8ToBase64(json)};
-    if(sha) body.sha=sha;
-
-    var r=await fetch(api,{
-      method:'PUT',
-      headers:{'Authorization':'token '+token,
-        'Accept':'application/vnd.github.v3+json',
-        'X-GitHub-Api-Version':'2022-11-28',
-        'Content-Type':'application/json'},
-      body:JSON.stringify(body)
-    });
-    if(!r.ok){var t=await r.text();throw new Error('GitHub '+r.status+': '+t.substring(0,200));}
-    log('GitHub Sync');
-    alert('સફળ!');
+    var url=ghUrl(c);
+    async function attempt(){
+      var sha;
+      var g=await fetch(url,{headers:{'Authorization':'token '+c.token,
+        'Accept':'application/vnd.github+json'}});
+      if(g.status===200) sha=(await g.json()).sha;
+      else if(g.status!==404) throw new Error('Read '+g.status);
+      var body={message:'NSE backup '+new Date().toISOString(),content:utf8ToBase64(json)};
+      if(sha) body.sha=sha;
+      return fetch(url,{method:'PUT',
+        headers:{'Authorization':'token '+c.token,
+          'Accept':'application/vnd.github+json','Content-Type':'application/json'},
+        body:JSON.stringify(body)});
+    }
+    var r=await attempt();
+    if(!r.ok&&r.status===422){
+      await new Promise(function(x){setTimeout(x,400);});
+      r=await attempt();
+    }
+    if(!r.ok){var t=await r.text();throw new Error('Save '+r.status+': '+t.substring(0,150));}
+    var now=new Date();
+    try{localStorage.setItem(GH_KEY+'_last',now.toISOString());}catch(e){}
+    log(silent?'GitHub Auto-sync':'GitHub Save');
+    ghStatus((silent?'✅ Auto-sync (':'✅ Save થયું (')+now.toLocaleString('gu-IN')+')',true);
   }catch(e){
-    log('error: '+e.message); alert('error: '+e.message);
+    log('error: '+e.message); ghStatus('❌ '+e.message,false);
+  }finally{
+    syncBusy=false; btn.disabled=false; $('ghRestoreBtn').disabled=false;
   }
-  btn.disabled=false; btn.textContent='Sync કરો';
+}
+
+var suppressAutoSync=false, autoSyncTimer=null;
+function scheduleAutoSync(){
+  if(suppressAutoSync) return;
+  var g=loadGhSettings();
+  if(!g.owner||!g.repo||!g.token||!g.path) return;
+  clearTimeout(autoSyncTimer);
+  autoSyncTimer=setTimeout(function(){pushToCloud(true);},15000);
+}
+function hookWrite(fn){
+  return function(){
+    var r=fn.apply(null,arguments);
+    return Promise.resolve(r).then(function(v){scheduleAutoSync();return v;});
+  };
+}
+putDay=hookWrite(putDay);
+deleteDay=hookWrite(deleteDay);
+putSkip=hookWrite(putSkip);
+deleteSkip=hookWrite(deleteSkip);
+putIndexList=hookWrite(putIndexList);
+deleteIndexList=hookWrite(deleteIndexList);
+clearAll=hookWrite(clearAll);
+
+async function handleGithubRestore(){
+  var c=ghCfg();
+  if(!c.owner||!c.repo||!c.token){ghStatus('❌ Username, Repo, Token ભરો',false);return;}
+  if(syncBusy){ghStatus('⏳ પહેલેથી ચાલુ છે...');return;}
+  if(!confirm('Restore કરવાથી ફોનનો હાલનો ડેટા બદલાશે. ચાલુ રાખવું?'))return;
+  saveGhSettings(c);
+  syncBusy=true;
+  $('ghBtn').disabled=true; $('ghRestoreBtn').disabled=true;
+  ghStatus('⏳ Restore થાય છે...');
+  var reload=false;
+  suppressAutoSync=true; clearTimeout(autoSyncTimer);
+  try{
+    var r=await fetch(ghUrl(c),{headers:{'Authorization':'token '+c.token,
+      'Accept':'application/vnd.github.raw'}});
+    if(r.status===404){ghStatus('❌ Backup મળ્યું નથી',false);return;}
+    if(!r.ok) throw new Error('Read '+r.status);
+    var obj=JSON.parse(await r.text());
+    if(!obj||typeof obj!=='object'||!Array.isArray(obj.days)) throw new Error('અમાન્ય backup ફાઈલ');
+    if((obj._v||1)>BACKUP_VERSION) throw new Error('backup નવા version નું છે — app update કરો');
+
+    await clearAll();
+    for(var i=0;i<obj.days.length;i++){
+      if(obj.days[i]&&obj.days[i].date) await putDay(obj.days[i]);
+    }
+    await clearStore(STORE_SKIP);
+    var sk=obj.skips||[];
+    for(var j=0;j<sk.length;j++){
+      if(sk[j]&&sk[j].symbol) await putSkip(sk[j]);
+    }
+    await deleteIndexList();
+    if(obj.indexlist&&obj.indexlist.id) await putIndexList(obj.indexlist);
+    log('Restore: '+obj.days.length+' દિવસ');
+    ghStatus('✅ Restore થયું — reload...',true);
+    reload=true;
+  }catch(e){
+    log('error: '+e.message); ghStatus('❌ Restore: '+e.message,false);
+  }finally{
+    suppressAutoSync=false; clearTimeout(autoSyncTimer);
+    syncBusy=false; $('ghBtn').disabled=false; $('ghRestoreBtn').disabled=false;
+  }
+  if(reload) setTimeout(function(){location.reload();},900);
 }
 
 async function init(){
@@ -2068,6 +2207,18 @@ async function init(){
   $('scanBtn').addEventListener('click',handleScan);
   $('checkSymBtn').addEventListener('click',checkSymbolDebug);
   $('ghBtn').addEventListener('click',handleGithubSync);
+  $('ghRestoreBtn').addEventListener('click',handleGithubRestore);
+  (function(){
+    var g=loadGhSettings();
+    $('ghOwner').value=g.owner||GH_DEFAULTS.owner;
+    $('ghRepo').value=g.repo||GH_DEFAULTS.repo;
+    $('ghToken').value=g.token||GH_DEFAULTS.token;
+    $('ghPath').value=g.path||GH_DEFAULTS.path;
+    try{
+      var t=localStorage.getItem(GH_KEY+'_last');
+      if(t) ghStatus('છેલ્લે save: '+new Date(t).toLocaleString('gu-IN'));
+    }catch(e){}
+  })();
   $('onlyGreenToggle').addEventListener('change',function(){
     if(currentResults && currentResults.length>0) refreshView();
   });
