@@ -103,6 +103,13 @@ font-size:14px;color:#1d4ed8;display:none;border:1px solid #bfdbfe;font-weight:6
 .range-box.fresh{background:#d1fae5;color:#065f46;border:1px solid #6ee7b7}
 .range-box.watch{background:#fef3c7;color:#92400e;border:1px solid #fbbf24}
 .range-box.missed{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
+.entry-guide{margin-top:10px;padding:10px 12px;border-radius:10px;background:#f8fafc;border:2px solid #94a3b8}
+.eg-title{font-weight:bold;font-size:16px;color:#0f172a;margin-bottom:6px}
+.eg-step{padding:7px 9px;margin:5px 0;border-radius:8px;background:#fff;border:1px solid #e2e8f0;font-size:15px;line-height:1.55}
+.eg-step.ok{background:#d1fae5;border-color:#6ee7b7;color:#065f46}
+.eg-step.wait{background:#fef3c7;border-color:#fbbf24;color:#92400e}
+.eg-step.bad{background:#fee2e2;border-color:#fca5a5;color:#991b1b}
+.eg-note{font-size:12px;color:#64748b;margin-top:6px}
 .runup-badge{display:inline-block;padding:2px 8px;border-radius:6px;
   font-size:12px;font-weight:bold;margin-left:4px;vertical-align:middle}
 .runup-badge.high{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
@@ -1567,6 +1574,25 @@ function funnelHTML(open){
   return h + '</div></details>';
 }
 
+function entryGuideHTML(pat){
+  var en=pat.entry, lvl=en/1.005;
+  var z2=en*1.03, mx=en*1.05, sl=lvl*0.97;
+  var f=function(x){return fmtPrice(x);};
+  var g='<div class="entry-guide">';
+  g+='<div class="eg-title">📋 સવારે એન્ટ્રી કેવી રીતે લેવી</div>';
+  if(pat.distPct!==undefined && pat.distPct>5){
+    g+='<div class="eg-step bad"><b>⚠️ ગઈકાલે જ ભાવ મર્યાદાથી ઉપર બંધ થયો છે.</b> આજે સામાન્ય રીતે ખરીદવું નહીં.</div>';
+  }
+  g+='<div class="eg-step"><b>⏰ સમય:</b> 9:15 વાગ્યે માર્કેટ ખૂલે. પહેલી 15 મિનિટ ભાવ ખૂબ ઉપર-નીચે થાય છે, એટલે <b>9:30 પછી</b> ભાવ જુઓ.</div>';
+  g+='<div class="eg-step ok"><b>✅ ખરીદો:</b> ભાવ <b>'+f(en)+' થી '+f(z2)+'</b> ની વચ્ચે હોય ત્યારે.</div>';
+  g+='<div class="eg-step wait"><b>⏳ રાહ જુઓ:</b> ભાવ '+f(en)+' થી <b>નીચે</b> હોય તો ખરીદવું નહીં. ભાવ '+f(en)+' પાર કરે ત્યારે જ ખરીદો.</div>';
+  g+='<div class="eg-step bad"><b>❌ ન ખરીદો:</b> ભાવ '+f(mx)+' થી <b>ઉપર</b> હોય તો છોડી દો. '+f(z2)+' થી '+f(mx)+' વચ્ચે હોય તો પણ ટાળવું સારું.</div>';
+  g+='<div class="eg-step"><b>🛑 નુકસાન અટકાવ (SL):</b> '+f(sl)+' — ભાવ આ નીચે જાય તો વેચી નીકળો. (સૂચન, તમારા જોખમ મુજબ બદલી શકો)</div>';
+  g+='<div class="eg-note">આ ભાવ છેલ્લા બંધ ડેટા પર આધારિત છે. ખરીદ-વેચની સલાહ નથી.</div>';
+  g+='</div>';
+  return g;
+}
+
 function renderResults(results){
   var el=$('resultBox');
   if(!results||results.length===0){
@@ -1674,6 +1700,7 @@ function renderResults(results){
         h+='<div class="range-box '+rCls+'">Entry Range: '
           +fmtPrice(pat.rangeMin)+' – '+fmtPrice(pat.rangeMax)+'</div>';
       }
+      h+=entryGuideHTML(pat);
 
       h+='<div class="data-line"><span class="lbl">Required Vol</span>'
         +'<span class="val blue">'+fmtVol(volNeeded)+'</span></div>';
